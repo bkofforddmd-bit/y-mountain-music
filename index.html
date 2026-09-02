@@ -654,12 +654,108 @@ function ScrollingLyrics({audioRef,lyrics,height,delay,endBuffer}){
       fontSize:15,lineHeight:1.8,color:C.text,margin:0,textAlign:"center"}},lyrics));
 }
 
+/* ------------------------------------------------ Synced (karaoke) lyrics
+   Songs can carry lyricsSync: [[lineIndex, seconds], ...] — the moment each
+   lyric line starts. When present (set with the ⏱ Sync editor in band mode),
+   the lyrics panel highlights the line being sung and keeps it centered.
+   parseSync() returns the time-sorted map, or null when there's no usable
+   sync — callers then fall back to the plain scrolling panel. */
+function lyricLines(lyrics){return String(lyrics||"").replace(/\r/g,"").split("\n");}
+function isSectionLine(text){return /^\s*\[[^\]]+\]\s*$/.test(text);}
+function parseSync(song){
+  const raw=song&&song.lyricsSync;
+  if(!Array.isArray(raw)||raw.length<2)return null;
+  const n=lyricLines(song.lyrics).length;
+  const out=[];
+  for(const p of raw){
+    if(!Array.isArray(p)||p.length<2)continue;
+    const i=p[0],t=p[1];
+    if(!Number.isInteger(i)||i<0||i>=n)continue;
+    if(typeof t!=="number"||!isFinite(t)||t<0)continue;
+    out.push([i,t]);
+  }
+  if(out.length<2)return null;
+  out.sort((a,b)=>a[1]-b[1]);
+  return out;
+}
+function fmtStamp(t){const m=Math.floor(t/60),s=t-m*60;
+  return m+":"+(s<10?"0":"")+s.toFixed(1);}
+
+function SyncedLyrics({audioRef,song,sync,height}){
+  const lines=useMemo(()=>lyricLines(song.lyrics),[song.lyrics]);
+  const timeByLine=useMemo(()=>{const m=new Map();sync.forEach(([i,t])=>m.set(i,t));return m;},[sync]);
+  const [active,setActive]=useState(-1);
+  const boxRef=React.useRef(null);
+  const activeRef=React.useRef(-1);
+  // Follow the audio clock and light up the last line whose start has passed.
+  // rAF gives frame-smooth updates while the page is visible; the timeupdate
+  // listener keeps the highlight moving when rAF is throttled (hidden tab,
+  // phone screen off).
+  useEffect(()=>{
+    const update=()=>{
+      const a=audioRef&&audioRef.current;
+      if(!a)return;
+      const t=a.currentTime+0.05;
+      let cur=-1;
+      for(const [i,st] of sync){ if(st<=t)cur=i; else break; }
+      if(cur!==activeRef.current){activeRef.current=cur;setActive(cur);}
+    };
+    let raf;
+    const tick=()=>{update();raf=requestAnimationFrame(tick);};
+    raf=requestAnimationFrame(tick);
+    const a=audioRef&&audioRef.current;
+    if(a){a.addEventListener("timeupdate",update);a.addEventListener("seeked",update);}
+    return ()=>{cancelAnimationFrame(raf);
+      if(a){a.removeEventListener("timeupdate",update);a.removeEventListener("seeked",update);}};
+  },[sync,audioRef]);
+  // Keep the active line vertically centered in the panel.
+  useEffect(()=>{
+    const box=boxRef.current;if(!box)return;
+    if(active<0){box.scrollTo({top:0,behavior:"smooth"});return;}
+    const el=box.querySelector('[data-line="'+active+'"]');
+    if(el)box.scrollTo({top:el.offsetTop-box.clientHeight/2+el.offsetHeight/2,
+      behavior:"smooth"});
+  },[active]);
+  const seek=(i)=>{
+    const a=audioRef&&audioRef.current,t=timeByLine.get(i);
+    if(!a||t==null)return;
+    try{a.currentTime=t;}catch(_){}
+    if(a.paused)a.play().catch(()=>{});
+  };
+  return e("div",{ref:boxRef,style:{position:"relative",maxHeight:height||260,
+    height:height||260,overflow:"hidden",borderRadius:8,background:C.cream,
+    border:`1px solid ${C.line}`,padding:"0 18px",marginTop:14,
+    maskImage:"linear-gradient(to bottom,transparent,#000 14%,#000 86%,transparent)",
+    WebkitMaskImage:"linear-gradient(to bottom,transparent,#000 14%,#000 86%,transparent)"}},
+    e("div",{style:{padding:((height||260)/2-14)+"px 0"}},
+      lines.map((ln,i)=>{
+        const text=ln.replace(/\s+$/,"");
+        const sec=isSectionLine(text);
+        const isActive=i===active;
+        const canSeek=timeByLine.has(i);
+        return e("div",{key:i,"data-line":i,onClick:canSeek?()=>seek(i):undefined,
+          title:canSeek?"Jump here":undefined,
+          style:{fontFamily:"Georgia,serif",textAlign:"center",whiteSpace:"pre-wrap",
+            minHeight:sec?"1.2em":"1.6em",
+            fontSize:sec?11:(isActive?17.5:15),
+            lineHeight:1.75,
+            letterSpacing:sec?"0.16em":"normal",
+            textTransform:sec?"uppercase":"none",
+            fontWeight:isActive||sec?"bold":"normal",
+            color:isActive?C.gold:(sec?"#8D8371":(active>=0&&i<active?"#6A614F":"#B7AD97")),
+            cursor:canSeek?"pointer":"default",
+            transition:"color .25s,font-size .25s"}},
+          text||" ");
+      })));
+}
+
 function Player({song}){
   const vid=ytId(song.youtube);
   const [mode,setMode]=useState(vid?"video":(song.audioUrl?"audio":"none"));
   const audioRef=React.useRef(null);
   useEffect(()=>{setMode(vid?"video":(song.audioUrl?"audio":"none"));},[song.id]);
   const hasVideo=!!vid,hasAudio=!!song.audioUrl;
+  const sync=useMemo(()=>parseSync(song),[song]);
   return e("div",{style:{background:C.paper,border:`1.5px solid ${C.line}`,
     borderTop:`4px solid ${C.gold}`,borderRadius:"0 0 12px 12px",padding:"18px 20px 22px"}},
     (hasVideo&&hasAudio)&&e("div",{style:{display:"flex",gap:8,marginBottom:14}},
@@ -677,9 +773,11 @@ function Player({song}){
         style:{position:"absolute",top:0,left:0,width:"100%",height:"100%",border:0}})),
     mode==="audio"&&hasAudio&&e("div",{style:{padding:"6px 0"}},
       e("audio",{ref:audioRef,controls:true,preload:"none",src:song.audioUrl,style:{width:"100%"}}),
-      song.lyrics&&e(ScrollingLyrics,{audioRef,lyrics:song.lyrics,
-        delay:song.lyricsDelay==null?35:song.lyricsDelay,
-        endBuffer:song.lyricsEnd==null?30:song.lyricsEnd})),
+      song.lyrics&&(sync
+        ?e(SyncedLyrics,{audioRef,song,sync})
+        :e(ScrollingLyrics,{audioRef,lyrics:song.lyrics,
+            delay:song.lyricsDelay==null?35:song.lyricsDelay,
+            endBuffer:song.lyricsEnd==null?30:song.lyricsEnd}))),
     mode==="none"&&e("div",{style:{padding:"26px 16px",textAlign:"center",color:C.src,
       background:C.cream,borderRadius:8,fontStyle:"italic"}},
       "This song isn't streaming yet — check back soon."),
@@ -795,6 +893,7 @@ function ShareButton({title,text,url,label,small}){
 /* --------------------------------------------------------- Song card */
 function SongCard({song,open,onToggle,canEdit,onEdited}){
   const [editing,setEditing]=useState(false);
+  const [syncing,setSyncing]=useState(false);
   const vid=ytId(song.youtube);
   const badge=vid?"▶ Video":(song.audioUrl?"♪ Audio":"Coming soon");
   const badgeColor=vid?C.blue:(song.audioUrl?C.src:"#7A7160");
@@ -817,13 +916,22 @@ function SongCard({song,open,onToggle,canEdit,onEdited}){
         transform:open?"rotate(180deg)":"none",transition:"transform .2s",marginTop:2}},"⌄")),
     open&&!editing&&e("div",null,
       e(Player,{song}),
-      canEdit&&e("div",{style:{padding:"0 20px 16px"}},
+      canEdit&&e("div",{style:{padding:"0 20px 16px",display:"flex",gap:8,flexWrap:"wrap"}},
         e("button",{onClick:()=>setEditing(true),
           style:{padding:"7px 16px",fontSize:13,borderRadius:8,
             border:`1.5px solid ${C.line}`,background:"transparent",color:C.src}},
-          "✎ Edit this song"))),
+          "✎ Edit this song"),
+        song.audioUrl&&song.lyrics&&e("button",{onClick:()=>setSyncing(true),
+          title:"Tap along with the song so the lyrics highlight in time",
+          style:{padding:"7px 16px",fontSize:13,borderRadius:8,
+            border:`1.5px solid ${song.lyricsSync?C.gold:C.line}`,background:"transparent",
+            color:song.lyricsSync?C.gold:C.src}},
+          song.lyricsSync?"⏱ Re-sync lyrics":"⏱ Sync lyrics"))),
     open&&editing&&e(SongEditor,{song,
       onDone:(updated)=>{setEditing(false);if(updated)onEdited&&onEdited();},
+    }),
+    syncing&&e(LyricSyncEditor,{song,
+      onDone:(updated)=>{setSyncing(false);if(updated)onEdited&&onEdited();},
     }),
   );
 }
@@ -918,6 +1026,188 @@ const field={padding:"10px 12px",fontSize:15,borderRadius:8,
   border:`1.5px solid ${C.line}`,background:"#2A251E",color:C.text,width:"100%"};
 const lbl={fontSize:13,color:C.src,marginBottom:5,display:"block",letterSpacing:"0.03em"};
 
+/* --------------------------------------------- Lyric sync editor (band)
+   Full-screen tap-along tool: play the song and press the big button the
+   moment each line starts (or tap any line to mark it "starts now").
+   Saves [[lineIndex, seconds], ...] to the song via the sync action. */
+function LyricSyncEditor({song,onDone}){
+  const lines=useMemo(()=>lyricLines(song.lyrics),[song.lyrics]);
+  const singable=useMemo(()=>lines
+    .map((ln,i)=>({i,text:ln.replace(/\s+$/,"")}))
+    .filter(x=>x.text&&!isSectionLine(x.text)).map(x=>x.i),[lines]);
+  const [times,setTimes]=useState(()=>{
+    const m=new Map();
+    (parseSync(song)||[]).forEach(([i,t])=>{
+      const text=(lines[i]||"").replace(/\s+$/,"");
+      if(text&&!isSectionLine(text))m.set(i,t);
+    });
+    return m;
+  });
+  const [history,setHistory]=useState([]);
+  const [rate,setRate]=useState(1);
+  const [state,setState]=useState("idle"); // idle|saving|error|removing
+  const [msg,setMsg]=useState("");
+  const audioRef=React.useRef(null);
+  const listRef=React.useRef(null);
+  const pw=sessionStorage.getItem("cac_pw")||"";
+  const nextIdx=singable.find(i=>!times.has(i));
+
+  useEffect(()=>{const a=audioRef.current;if(a)a.playbackRate=rate;},[rate]);
+  // Keep the next line to mark centered in the list.
+  useEffect(()=>{
+    const list=listRef.current;if(!list)return;
+    const target=nextIdx==null?null:list.querySelector('[data-syncline="'+nextIdx+'"]');
+    if(target)list.scrollTo({top:target.offsetTop-list.clientHeight/2
+      +target.offsetHeight/2,behavior:"smooth"});
+  },[nextIdx]);
+
+  function markLine(i){
+    const a=audioRef.current;if(!a)return;
+    const t=Math.max(0,a.currentTime);
+    setTimes(prev=>{
+      const m=new Map(prev);
+      // Drop marks the new one would put out of order, so times always ascend.
+      for(const [k,v] of m){ if((k>i&&v<=t)||(k<i&&v>=t))m.delete(k); }
+      m.set(i,t);
+      return m;
+    });
+    setHistory(h=>[...h,i]);
+    setMsg("");
+  }
+  function undo(){
+    setHistory(h=>{
+      if(h.length===0)return h;
+      const last=h[h.length-1];
+      setTimes(prev=>{const m=new Map(prev);m.delete(last);return m;});
+      return h.slice(0,-1);
+    });
+  }
+  function nudge(d){
+    setTimes(prev=>{
+      const m=new Map();
+      for(const [k,v] of prev)m.set(k,Math.max(0,v+d));
+      return m;
+    });
+  }
+  function clearAll(){
+    if(!window.confirm("Clear every mark and start over?"))return;
+    setTimes(new Map());setHistory([]);
+  }
+  async function post(payload,busy){
+    setState(busy);setMsg("");
+    try{
+      const r=await fetch(`${API}/upload`,{method:"POST",
+        headers:{"Content-Type":"application/json","x-upload-password":pw},
+        body:JSON.stringify(payload)});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error||"Could not save");
+      onDone&&onDone(true);
+    }catch(err){setState("error");setMsg(err.message);}
+  }
+  function save(){
+    if(times.size<2){setState("error");
+      setMsg("Mark at least two lines first — play the song and tap along.");return;}
+    const arr=[...times.entries()].sort((a,b)=>a[1]-b[1])
+      .map(([i,t])=>[i,Math.round(t*10)/10]);
+    post({action:"sync",id:song.id,lyricsSync:arr},"saving");
+  }
+  function removeSync(){
+    if(!window.confirm("Remove the saved sync? Lyrics go back to plain scrolling."))return;
+    post({action:"sync",id:song.id,lyricsSync:[]},"removing");
+  }
+
+  const nextText=nextIdx==null?"":lines[nextIdx].trim();
+  const busy=state==="saving"||state==="removing";
+  const btn=(label,onClick,extra)=>e("button",{onClick,disabled:busy,
+    style:Object.assign({padding:"8px 14px",fontSize:13,borderRadius:8,
+      border:`1.5px solid ${C.line}`,background:"transparent",color:C.text},extra||{})},label);
+
+  return e("div",{style:{position:"fixed",inset:0,zIndex:80,background:C.cream,
+    display:"flex",flexDirection:"column",alignItems:"center"}},
+    e("div",{style:{width:"100%",maxWidth:680,flex:1,minHeight:0,display:"flex",
+      flexDirection:"column",padding:"14px 16px 12px"}},
+      /* header */
+      e("div",{style:{display:"flex",alignItems:"center",gap:10,marginBottom:8}},
+        e("div",{style:{flex:1,minWidth:0}},
+          e("div",{style:{fontSize:11,letterSpacing:"0.14em",textTransform:"uppercase",
+            color:C.src}},"⏱ Sync lyrics"),
+          e("div",{style:{fontSize:17,fontWeight:"bold",color:C.gold,
+            overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},song.title)),
+        e("button",{onClick:()=>onDone&&onDone(false),
+          style:{padding:"8px 14px",fontSize:14,borderRadius:8,
+            border:`1.5px solid ${C.line}`,background:"transparent",color:C.src}},"✕ Close")),
+      /* player + speed */
+      e("audio",{ref:audioRef,controls:true,preload:"auto",src:song.audioUrl,
+        onLoadedMetadata:()=>{const a=audioRef.current;if(a)a.playbackRate=rate;},
+        style:{width:"100%"}}),
+      e("div",{style:{display:"flex",gap:6,alignItems:"center",margin:"8px 0 6px",
+        flexWrap:"wrap"}},
+        e("span",{style:{fontSize:12,color:C.src}},"Speed:"),
+        [1,0.75,0.5].map(r=>e("button",{key:r,onClick:()=>setRate(r),
+          "aria-pressed":rate===r,
+          style:{padding:"4px 12px",fontSize:12,borderRadius:14,
+            border:`1.5px solid ${rate===r?C.gold:C.line}`,
+            background:rate===r?C.gold:"transparent",
+            color:rate===r?C.brown:C.src}},r+"×")),
+        e("span",{style:{fontSize:12,color:C.src,marginLeft:"auto"}},
+          times.size+" of "+singable.length+" lines marked")),
+      e("p",{style:{fontSize:12.5,color:C.src,margin:"0 0 8px",lineHeight:1.5}},
+        "Play the song. The moment the highlighted line is sung, hit the big button. "
+        +"Tap any line to re-mark it as “starts now.” Slow the speed if it helps."),
+      /* line list */
+      e("div",{ref:listRef,style:{position:"relative",flex:1,minHeight:0,
+        overflowY:"auto",background:C.paper,border:`1.5px solid ${C.line}`,
+        borderRadius:10,padding:"10px 0"}},
+        lines.map((ln,i)=>{
+          const text=ln.replace(/\s+$/,"");
+          const sec=isSectionLine(text);
+          const singableLine=text&&!sec;
+          const t=times.get(i);
+          const isNext=i===nextIdx;
+          if(!text)return e("div",{key:i,style:{height:12}});
+          if(sec)return e("div",{key:i,style:{padding:"6px 16px",fontSize:11,
+            letterSpacing:"0.16em",textTransform:"uppercase",fontWeight:"bold",
+            color:"#8D8371",textAlign:"center"}},text);
+          return e("div",{key:i,"data-syncline":i,onClick:()=>markLine(i),
+            style:{display:"flex",alignItems:"baseline",gap:10,padding:"5px 12px",
+              cursor:"pointer",
+              background:isNext?"#2E2820":"transparent",
+              borderLeft:isNext?`3px solid ${C.gold}`:"3px solid transparent"}},
+            e("span",{style:{flex:"0 0 52px",fontSize:11.5,textAlign:"right",
+              fontVariantNumeric:"tabular-nums",
+              color:t!=null?C.gold:"#5C5445"}},t!=null?fmtStamp(t):"· · ·"),
+            e("span",{style:{fontSize:14.5,lineHeight:1.5,
+              color:t!=null?C.text:(isNext?C.gold:"#B7AD97"),
+              fontWeight:isNext?"bold":"normal"}},text));
+        })),
+      /* controls */
+      e("div",{style:{paddingTop:10}},
+        e("button",{onClick:()=>{if(nextIdx!=null)markLine(nextIdx);},
+          disabled:nextIdx==null||busy,
+          style:{width:"100%",padding:"16px 18px",fontSize:16,fontWeight:"bold",
+            borderRadius:12,border:0,cursor:nextIdx==null?"default":"pointer",
+            background:nextIdx==null?"#3A342B":C.gold,
+            color:nextIdx==null?C.src:C.brown,
+            boxShadow:nextIdx==null?"none":"0 4px 14px rgba(0,0,0,.35)"}},
+          nextIdx==null
+            ?"Every line is marked — hit Save sync"
+            :"⏺ Starts NOW → “"+(nextText.length>44?nextText.slice(0,44)+"…":nextText)+"”"),
+        msg&&e("p",{style:{color:state==="error"?"#E66A5C":C.src,fontSize:13,
+          margin:"8px 0 0"}},msg),
+        e("div",{style:{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",
+          marginTop:10}},
+          btn("↩ Undo",undo),
+          btn("−¼s",()=>nudge(-0.25),{},),
+          btn("+¼s",()=>nudge(0.25)),
+          btn("Clear",clearAll,{color:"#E66A5C",borderColor:"#7A4A48"}),
+          song.lyricsSync&&btn(state==="removing"?"Removing…":"Remove sync",removeSync,
+            {color:"#E66A5C",borderColor:"#7A4A48"}),
+          e("button",{onClick:save,disabled:busy,
+            style:{marginLeft:"auto",padding:"10px 24px",fontSize:14,fontWeight:"bold",
+              borderRadius:8,border:0,background:busy?"#4A4336":C.blue,color:"#14120F"}},
+            state==="saving"?"Saving…":"💾 Save sync")))));
+}
+
 /* ------------------------------------------------- Song editor (band) */
 function SongEditor({song,onDone}){
   const [f,setF]=useState({
@@ -996,7 +1286,9 @@ function SongEditor({song,onDone}){
         e("div",{style:{flex:"1 1 200px"}},e("label",{style:lbl},"YouTube URL"),
           e("input",{style:field,value:f.youtube,onChange:up("youtube")}))),
       e("div",null,e("label",{style:lbl},"Lyrics"),
-        e("textarea",{style:{...field,minHeight:120,resize:"vertical"},value:f.lyrics,onChange:up("lyrics")})),
+        e("textarea",{style:{...field,minHeight:120,resize:"vertical"},value:f.lyrics,onChange:up("lyrics")}),
+        song.lyricsSync&&e("p",{style:{fontSize:12,color:C.src,margin:"5px 0 0"}},
+          "⏱ This song has synced lyrics. Adding or removing lines here can knock the sync out of step — re-run “Sync lyrics” afterward if you change them.")),
       e("div",null,e("label",{style:lbl},"Blurb"),
         e("textarea",{style:{...field,minHeight:60,resize:"vertical"},value:f.blurb,onChange:up("blurb")})),
       msg&&e("p",{style:{margin:0,color:"#E66A5C"}},msg),
@@ -2323,9 +2615,12 @@ function ConcertPlayer({id}){
                 ? e("div",null,
                     e("audio",{ref:audioRef,controls:true,style:{width:"100%",marginTop:14},
                       onEnded:next}),
-                    current.lyrics&&e(ScrollingLyrics,{audioRef,lyrics:current.lyrics,height:240,
-                      delay:current.lyricsDelay==null?35:current.lyricsDelay,
-                      endBuffer:current.lyricsEnd==null?30:current.lyricsEnd}))
+                    current.lyrics&&(parseSync(current)
+                      ?e(SyncedLyrics,{key:current.id,audioRef,song:current,
+                          sync:parseSync(current),height:240})
+                      :e(ScrollingLyrics,{audioRef,lyrics:current.lyrics,height:240,
+                          delay:current.lyricsDelay==null?35:current.lyricsDelay,
+                          endBuffer:current.lyricsEnd==null?30:current.lyricsEnd})))
                 : e("div",{style:{padding:"20px",textAlign:"center",color:C.src,
                     fontStyle:"italic",marginTop:14}},"(No media for this song yet)")),
 

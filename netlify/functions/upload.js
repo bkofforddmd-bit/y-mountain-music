@@ -10,6 +10,27 @@ const UPLOAD_PASSWORD = process.env.UPLOAD_PASSWORD;
 const clip = (s, n) => String(s == null ? "" : s).slice(0, n).trim();
 const slug = (s) => clip(s, 60).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "song";
 
+// Validate a lyric-sync map: an array of [lineIndex, seconds] pairs marking when
+// each lyric line starts in the audio. Returns a cleaned, time-sorted array, or
+// null when there's nothing usable (which clears the sync).
+const cleanSync = (raw, lyrics) => {
+  if (!Array.isArray(raw)) return null;
+  const lineCount = String(lyrics || "").replace(/\r/g, "").split("\n").length;
+  const seen = new Set();
+  const out = [];
+  for (const p of raw.slice(0, 500)) {
+    if (!Array.isArray(p)) continue;
+    const i = parseInt(p[0], 10), t = Number(p[1]);
+    if (!Number.isInteger(i) || i < 0 || i >= lineCount) continue;
+    if (!isFinite(t) || t < 0 || t > 7200) continue;
+    if (seen.has(i)) continue;
+    seen.add(i);
+    out.push([i, Math.round(t * 10) / 10]);
+  }
+  out.sort((a, b) => a[1] - b[1]);
+  return out.length >= 2 ? out : null;
+};
+
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
 
@@ -110,11 +131,39 @@ exports.handler = async (event) => {
         blurb:   clip(song.blurb, 400),
         updatedAt: new Date().toISOString(),
       };
+      // Lyric edits can shift line numbers; drop sync marks that no longer land
+      // on a real line so playback falls back to plain scrolling, not nonsense.
+      if (songs[i].lyricsSync) {
+        const revalidated = cleanSync(songs[i].lyricsSync, songs[i].lyrics);
+        if (revalidated) songs[i].lyricsSync = revalidated;
+        else delete songs[i].lyricsSync;
+      }
       catalog.songs = songs;
       await putJSON(CATALOG_KEY, catalog);
       return json(200, { ok: true, entry: songs[i] });
     } catch (err) {
       return json(500, { error: "Could not update song", detail: String(err.message || err) });
+    }
+  }
+
+  // ---- 3b) Save (or clear) a song's lyric-sync timestamps ----
+  if (action === "sync") {
+    const id = clip(body.id, 120);
+    if (!id) return json(400, { error: "Missing song id" });
+    try {
+      const catalog = await getJSON(CATALOG_KEY, { songs: [] });
+      const songs = catalog.songs || [];
+      const i = songs.findIndex((x) => x.id === id);
+      if (i < 0) return json(404, { error: "Song not found" });
+      const sync = cleanSync(body.lyricsSync, songs[i].lyrics);
+      if (sync) songs[i].lyricsSync = sync;
+      else delete songs[i].lyricsSync;
+      songs[i].updatedAt = new Date().toISOString();
+      catalog.songs = songs;
+      await putJSON(CATALOG_KEY, catalog);
+      return json(200, { ok: true, entry: songs[i] });
+    } catch (err) {
+      return json(500, { error: "Could not save the sync", detail: String(err.message || err) });
     }
   }
 

@@ -5,7 +5,7 @@
 //   CACHE  ("cac-v2")       — the app shell + runtime-cached pages/scripts.
 //   MEDIA  ("cac-media-v1") — song audio, filled ONLY by the "Save for offline"
 //                             button in the app. Never auto-filled by playback.
-const CACHE = "cac-v2";
+const CACHE = "cac-v3";
 const MEDIA = "cac-media-v1";
 const SHELL = [
   "./", "./index.html", "./logo.png", "./icon.png", "./manifest.json",
