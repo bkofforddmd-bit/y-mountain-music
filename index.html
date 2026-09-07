@@ -77,9 +77,13 @@ function ShareButton({title,text,url,label,small,style}){
 
 const API = "/.netlify/functions";
 const GROUPINGS = [
+  {key:"group",label:"Group"},
   {key:"session",label:"Collection"},{key:"speaker",label:"Artist"},
   {key:"theme",label:"Theme"},{key:"flat",label:"All songs"},
 ];
+/* Starter groups offered when filing a song — typing a brand-new name works too,
+   and any group already used in the library shows up as a one-tap chip. */
+const SUGGESTED_GROUPS=["Family","Faith","Fun","Adaptations"];
 function ytId(url){if(!url)return null;
   const m=url.match(/(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/);return m?m[1]:null;}
 const PREVIEW_SECONDS=20;
@@ -891,7 +895,7 @@ function ShareButton({title,text,url,label,small}){
 }
 
 /* --------------------------------------------------------- Song card */
-function SongCard({song,open,onToggle,canEdit,onEdited}){
+function SongCard({song,open,onToggle,canEdit,onEdited,groupOptions}){
   const [editing,setEditing]=useState(false);
   const [syncing,setSyncing]=useState(false);
   const vid=ytId(song.youtube);
@@ -908,7 +912,9 @@ function SongCard({song,open,onToggle,canEdit,onEdited}){
         e("div",{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
           e("span",{style:{fontSize:19,fontWeight:"bold",color:C.gold}},song.title),
           e("span",{style:{fontSize:11,color:"#181512",background:badgeColor,
-            padding:"2px 9px",borderRadius:12}},badge)),
+            padding:"2px 9px",borderRadius:12}},badge),
+          song.group&&e("span",{style:{fontSize:11,color:C.src,
+            border:`1px solid ${C.line}`,padding:"1px 9px",borderRadius:12}},song.group)),
         song.talk&&e("div",{style:{fontSize:14,color:C.text,marginTop:5,fontStyle:"italic"}},
           "inspired by “"+song.talk+"”"+(song.speaker&&song.speaker!=="—"?" · "+song.speaker:"")),
         song.blurb&&e("div",{style:{fontSize:13.5,color:C.src,marginTop:6,lineHeight:1.5}},song.blurb)),
@@ -927,7 +933,7 @@ function SongCard({song,open,onToggle,canEdit,onEdited}){
             border:`1.5px solid ${song.lyricsSync?C.gold:C.line}`,background:"transparent",
             color:song.lyricsSync?C.gold:C.src}},
           song.lyricsSync?"⏱ Re-sync lyrics":"⏱ Sync lyrics"))),
-    open&&editing&&e(SongEditor,{song,
+    open&&editing&&e(SongEditor,{song,groupOptions,
       onDone:(updated)=>{setEditing(false);if(updated)onEdited&&onEdited();},
     }),
     syncing&&e(LyricSyncEditor,{song,
@@ -963,6 +969,14 @@ function Library({songs,loading,error,onReload,focusId}){
   const [query,setQuery]=useState("");
   const [openId,setOpenId]=useState(null);
   const canEdit=!!sessionStorage.getItem("cac_pw");
+  // Once the library loads, land on the Group view when any song is filed in a
+  // group — unless the visitor already tapped a grouping themselves.
+  const groupChosen=React.useRef(false);
+  useEffect(()=>{
+    if(!groupChosen.current&&songs.some(s=>String(s.group||"").trim()))setGroup("group");
+  },[songs]);
+  const groupOptions=useMemo(()=>[...new Set(songs
+    .map(s=>String(s.group||"").trim()).filter(Boolean))],[songs]);
   // Open a song that was deep-linked via ?song=ID, once songs have loaded.
   useEffect(()=>{
     if(focusId&&songs.some(s=>s.id===focusId)){
@@ -974,13 +988,14 @@ function Library({songs,loading,error,onReload,focusId}){
   const filtered=useMemo(()=>{
     const q=query.trim().toLowerCase();
     if(!q)return songs;
-    return songs.filter(s=>[s.title,s.talk,s.speaker,s.theme,s.session,s.style]
+    return songs.filter(s=>[s.title,s.talk,s.speaker,s.theme,s.group,s.session,s.style]
       .filter(Boolean).join(" ").toLowerCase().includes(q));
   },[query,songs]);
   const groups=useMemo(()=>{
     if(group==="flat")return[{name:null,items:filtered}];
     const map=new Map();
-    filtered.forEach(s=>{const k=s[group]||"Other";if(!map.has(k))map.set(k,[]);map.get(k).push(s);});
+    filtered.forEach(s=>{const k=String(s[group]||"").trim()||(group==="group"?"Ungrouped":"Other");
+      if(!map.has(k))map.set(k,[]);map.get(k).push(s);});
     return[...map.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([name,items])=>({name,items}));
   },[group,filtered]);
 
@@ -991,7 +1006,8 @@ function Library({songs,loading,error,onReload,focusId}){
       e("div",{role:"group","aria-label":"Group songs by",
         style:{display:"flex",flexWrap:"wrap",gap:6}},
         e("span",{style:{fontSize:13,color:C.src,alignSelf:"center",marginRight:4}},"Group by:"),
-        GROUPINGS.map(g=>e("button",{key:g.key,onClick:()=>setGroup(g.key),
+        GROUPINGS.map(g=>e("button",{key:g.key,
+          onClick:()=>{groupChosen.current=true;setGroup(g.key);},
           "aria-pressed":group===g.key,
           style:{padding:"7px 14px",fontSize:14,borderRadius:20,
             border:`1.5px solid ${group===g.key?C.gold:C.line}`,
@@ -1016,7 +1032,7 @@ function Library({songs,loading,error,onReload,focusId}){
         g.name,e("span",{style:{color:"#8D8371",marginLeft:8,fontSize:13}},g.items.length)),
       e("div",{style:{display:"flex",flexDirection:"column",gap:12}},
         g.items.map(s=>e(SongCard,{key:s.id,song:s,open:openId===s.id,
-          canEdit,onEdited:onReload,
+          canEdit,onEdited:onReload,groupOptions,
           onToggle:()=>setOpenId(openId===s.id?null:s.id)}))))),
   );
 }
@@ -1208,11 +1224,42 @@ function LyricSyncEditor({song,onDone}){
             state==="saving"?"Saving…":"💾 Save sync")))));
 }
 
+/* ---------------------------------------------------- Group field
+   Shared by the upload form and the song editor. One tap on a chip files the
+   song under that group (tap again to clear it); the text box below lets the
+   band invent a brand-new group on the spot. Chips = the starter four plus
+   every group already used in the library. */
+function GroupField({value,onChange,existing,id}){
+  const opts=useMemo(()=>{
+    const seen=new Set(SUGGESTED_GROUPS.map(g=>g.toLowerCase()));
+    const out=SUGGESTED_GROUPS.slice();
+    (existing||[]).forEach(g=>{
+      const t=String(g||"").trim();
+      if(t&&!seen.has(t.toLowerCase())){seen.add(t.toLowerCase());out.push(t);}
+    });
+    return out;
+  },[existing]);
+  const cur=String(value||"").trim().toLowerCase();
+  return e("div",null,
+    e("label",{style:lbl,htmlFor:id},"Group"),
+    e("div",{style:{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}},
+      opts.map(g=>{
+        const on=cur===g.toLowerCase();
+        return e("button",{key:g,type:"button","aria-pressed":on,
+          onClick:()=>onChange(on?"":g),
+          style:{padding:"5px 13px",fontSize:13,borderRadius:16,
+            border:`1.5px solid ${on?C.gold:C.line}`,
+            background:on?C.gold:"transparent",color:on?C.brown:C.src}},g);
+      })),
+    e("input",{id,style:field,value:value,onChange:ev=>onChange(ev.target.value),
+      placeholder:"Pick a group above, or type a new one"}));
+}
+
 /* ------------------------------------------------- Song editor (band) */
-function SongEditor({song,onDone}){
+function SongEditor({song,onDone,groupOptions}){
   const [f,setF]=useState({
     title:song.title||"",talk:song.talk||"",speaker:song.speaker||"",
-    session:song.session||"",theme:song.theme||"",style:song.style||"",
+    session:song.session||"",theme:song.theme||"",group:song.group||"",style:song.style||"",
     talkUrl:song.talkUrl||"",youtube:song.youtube||"",
     previewStart:song.previewStart?String(song.previewStart):"",
     duration:song.duration?String(song.duration):"",
@@ -1262,6 +1309,8 @@ function SongEditor({song,onDone}){
           e("input",{style:field,value:f.talk,onChange:up("talk")})),
         e("div",{style:{flex:"1 1 160px"}},e("label",{style:lbl},"Artist / credit"),
           e("input",{style:field,value:f.speaker,onChange:up("speaker")}))),
+      e(GroupField,{id:"e-group",value:f.group,existing:groupOptions,
+        onChange:v=>setF(prev=>({...prev,group:v}))}),
       e("div",{style:{display:"flex",gap:12,flexWrap:"wrap"}},
         e("div",half,e("label",{style:lbl},"Collection"),
           e("input",{style:field,value:f.session,onChange:up("session")})),
@@ -1670,7 +1719,7 @@ function SuggestionsInbox(){
 }
 
 /* ------------------------------------------------------- Band upload */
-function Band({onAdded,onBandChange}){
+function Band({onAdded,onBandChange,songs}){
   const [pw,setPw]=useState(sessionStorage.getItem("cac_pw")||"");
   const [showPw,setShowPw]=useState(false);
   const [bandOn,setBandOn]=useState(!!sessionStorage.getItem("cac_pw"));
@@ -1700,8 +1749,10 @@ function Band({onAdded,onBandChange}){
   }
   const [file,setFile]=useState(null);
   const [drag,setDrag]=useState(false);
-  const [s,setS]=useState({title:"",talk:"",speaker:"",session:"",theme:"",
+  const [s,setS]=useState({title:"",talk:"",speaker:"",session:"",theme:"",group:"",
     style:"",talkUrl:"",youtube:"",previewStart:"",duration:"",lyrics:"",lyricsDelay:"",lyricsEnd:"",blurb:""});
+  const groupOptions=useMemo(()=>[...new Set((songs||[])
+    .map(x=>String(x.group||"").trim()).filter(Boolean))],[songs]);
   const [state,setState]=useState("idle");
   const [msg,setMsg]=useState("");
   const [gdocUrl,setGdocUrl]=useState("");
@@ -1829,7 +1880,7 @@ function Band({onAdded,onBandChange}){
       sessionStorage.setItem("cac_pw",pw);
       setBandOn(true);onBandChange&&onBandChange();
       setState("done");setMsg("");setFile(null);
-      setS({title:"",talk:"",speaker:"",session:"",theme:"",style:"",talkUrl:"",youtube:"",previewStart:"",duration:"",lyrics:"",lyricsDelay:"",lyricsEnd:"",blurb:""});
+      setS({title:"",talk:"",speaker:"",session:"",theme:"",group:"",style:"",talkUrl:"",youtube:"",previewStart:"",duration:"",lyrics:"",lyricsDelay:"",lyricsEnd:"",blurb:""});
       setGdocUrl("");setGdocState("idle");setGdocMsg("");setGdocPreview("");setProjMsg("");
       onAdded&&onAdded(d.entry);
     }catch(err){setState("error");setMsg(err.message);}
@@ -1900,6 +1951,8 @@ function Band({onAdded,onBandChange}){
           e("input",{id:"b-talk",style:field,value:s.talk,onChange:up("talk")})),
         e("div",{style:{flex:"1 1 160px"}},e("label",{style:lbl,htmlFor:"b-speaker"},"Artist / credit"),
           e("input",{id:"b-speaker",style:field,value:s.speaker,onChange:up("speaker")}))),
+      e(GroupField,{id:"b-group",value:s.group,existing:groupOptions,
+        onChange:v=>setS(prev=>({...prev,group:v}))}),
       e("div",{style:{display:"flex",gap:12,flexWrap:"wrap"}},
         e("div",{style:{flex:"1 1 150px"}},e("label",{style:lbl,htmlFor:"b-session"},"Collection"),
           e("input",{id:"b-session",style:field,value:s.session,onChange:up("session"),
@@ -2804,7 +2857,7 @@ function App(){
     tab==="concert"&&e(ConcertBuilder,{songs,loading}),
     tab==="suggest"&&e(Suggest),
     tab==="inbox"&&e(SuggestionsInbox),
-    tab==="band"&&e(Band,{onAdded:()=>{setTab("library");load();},onBandChange}),
+    tab==="band"&&e(Band,{songs,onAdded:()=>{setTab("library");load();},onBandChange}),
     e("footer",{style:{textAlign:"center",padding:"26px 20px",color:C.src,fontSize:13,
       borderTop:`1px solid ${C.line}`,background:C.paper}},
       e("div",{style:{marginBottom:14,display:"flex",gap:10,justifyContent:"center",
