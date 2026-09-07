@@ -975,8 +975,50 @@ function Library({songs,loading,error,onReload,focusId}){
   useEffect(()=>{
     if(!groupChosen.current&&songs.some(s=>String(s.group||"").trim()))setGroup("group");
   },[songs]);
-  const groupOptions=useMemo(()=>[...new Set(songs
-    .map(s=>String(s.group||"").trim()).filter(Boolean))],[songs]);
+  // ---- Organize-into-groups mode (band): one-tap filing for the whole library.
+  // Each tap saves straight away via a tiny server action that changes ONLY the
+  // group, and the change is layered over the loaded songs locally so the page
+  // never has to re-fetch mid-flow.
+  const [organizing,setOrganizing]=useState(false);
+  const [overrides,setOverrides]=useState({});     // songId -> group saved this session
+  const [extraGroups,setExtraGroups]=useState([]); // brand-new groups started while organizing
+  const [newGroup,setNewGroup]=useState("");
+  const [savingId,setSavingId]=useState(null);
+  const [orgMsg,setOrgMsg]=useState("");
+  const shownSongs=useMemo(()=>songs.map(s=>
+    overrides[s.id]!=null?{...s,group:overrides[s.id]}:s),[songs,overrides]);
+  const groupOptions=useMemo(()=>[...new Set(shownSongs
+    .map(s=>String(s.group||"").trim()).filter(Boolean))],[shownSongs]);
+  async function assignGroup(id,g){
+    const pw=sessionStorage.getItem("cac_pw")||"";
+    setSavingId(id);setOrgMsg("");
+    try{
+      const r=await fetch(`${API}/upload`,{method:"POST",
+        headers:{"Content-Type":"application/json","x-upload-password":pw},
+        body:JSON.stringify({action:"group",id,group:g})});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error||"Could not save");
+      setOverrides(prev=>({...prev,[id]:g}));
+    }catch(err){setOrgMsg("Couldn't save that change — "+err.message);}
+    setSavingId(null);
+  }
+  function addNewGroup(){
+    const t=newGroup.trim();
+    if(!t)return;
+    setExtraGroups(prev=>[...prev,t]);
+    setNewGroup("");
+  }
+  // Chips shown while organizing: the starter four, every group in use, and any
+  // new ones started this session (deduped, case-insensitively).
+  const organizeChips=useMemo(()=>{
+    const seen=new Set(SUGGESTED_GROUPS.map(g=>g.toLowerCase()));
+    const out=SUGGESTED_GROUPS.slice();
+    [...groupOptions,...extraGroups].forEach(g=>{
+      const t=String(g||"").trim();
+      if(t&&!seen.has(t.toLowerCase())){seen.add(t.toLowerCase());out.push(t);}
+    });
+    return out;
+  },[groupOptions,extraGroups]);
   // Open a song that was deep-linked via ?song=ID, once songs have loaded.
   useEffect(()=>{
     if(focusId&&songs.some(s=>s.id===focusId)){
@@ -987,10 +1029,10 @@ function Library({songs,loading,error,onReload,focusId}){
   },[focusId,songs]);
   const filtered=useMemo(()=>{
     const q=query.trim().toLowerCase();
-    if(!q)return songs;
-    return songs.filter(s=>[s.title,s.talk,s.speaker,s.theme,s.group,s.session,s.style]
+    if(!q)return shownSongs;
+    return shownSongs.filter(s=>[s.title,s.talk,s.speaker,s.theme,s.group,s.session,s.style]
       .filter(Boolean).join(" ").toLowerCase().includes(q));
-  },[query,songs]);
+  },[query,shownSongs]);
   const groups=useMemo(()=>{
     if(group==="flat")return[{name:null,items:filtered}];
     const map=new Map();
@@ -1020,13 +1062,56 @@ function Library({songs,loading,error,onReload,focusId}){
     loading&&e("p",{style:{textAlign:"center",color:C.src,padding:"40px 0",fontStyle:"italic"}},
       "Loading the library…"),
     canEdit&&!loading&&e("div",{style:{background:C.paper,border:`1.5px solid ${C.gold}`,
-      borderRadius:8,padding:"8px 14px",margin:"4px 0 14px",fontSize:13,color:C.src}},
-      "Band mode is on — open any song to edit its details."),
+      borderRadius:8,padding:"8px 14px",margin:"4px 0 14px",fontSize:13,color:C.src,
+      display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+      e("span",{style:{flex:"1 1 220px"}},organizing
+        ?"Tap a group chip under each song — every tap saves right away. Tap the lit chip to unfile a song."
+        :"Band mode is on — open any song to edit its details."),
+      e("button",{onClick:()=>{setOrganizing(!organizing);setOrgMsg("");},
+        style:{padding:"7px 14px",fontSize:13,borderRadius:8,border:0,
+          background:organizing?C.gold:C.blue,color:"#14120F",fontWeight:"bold",
+          whiteSpace:"nowrap"}},
+        organizing?"✓ Done organizing":"🗂 Organize into groups")),
     error&&e("p",{style:{textAlign:"center",color:"#E66A5C",padding:"20px 0"}},error),
     !loading&&!error&&filtered.length===0&&e("p",{style:{textAlign:"center",color:C.src,
       fontStyle:"italic",padding:"40px 0"}},
       songs.length===0?"No songs yet — the band will add the first one soon.":"No songs match your search."),
-    groups.map((g,gi)=>e("section",{key:g.name||gi,style:{marginTop:gi?34:18}},
+    /* organize mode: a compact tap-to-file list instead of the song cards */
+    organizing&&canEdit&&!loading&&e("div",{style:{display:"flex",flexDirection:"column",
+      gap:10,marginTop:14}},
+      e("div",{style:{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",
+        background:C.paper,border:`1.5px solid ${C.line}`,borderRadius:10,padding:"10px 12px"}},
+        e("input",{value:newGroup,onChange:ev=>setNewGroup(ev.target.value),
+          placeholder:"Start a new group (e.g. Christmas)","aria-label":"New group name",
+          onKeyDown:ev=>{if(ev.key==="Enter")addNewGroup();},
+          style:{...field,flex:"1 1 200px",maxWidth:280}}),
+        e("button",{onClick:addNewGroup,
+          style:{padding:"9px 16px",fontSize:13,borderRadius:8,border:0,
+            background:C.blue,color:"#14120F",fontWeight:"bold",whiteSpace:"nowrap"}},
+          "+ Add group"),
+        orgMsg&&e("span",{style:{fontSize:12,color:"#E66A5C"}},orgMsg)),
+      filtered.map(s=>{
+        const cur=String(s.group||"").trim();
+        return e("div",{key:s.id,style:{background:C.paper,border:`1.5px solid ${C.line}`,
+          borderRadius:10,padding:"10px 12px"}},
+          e("div",{style:{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}},
+            e("span",{style:{fontWeight:"bold",color:C.gold,fontSize:15,
+              overflowWrap:"anywhere"}},s.title),
+            s.talk&&e("span",{style:{fontSize:12,color:C.src,fontStyle:"italic"}},
+              "“"+s.talk+"”"),
+            savingId===s.id&&e("span",{style:{fontSize:12,color:C.src,
+              fontStyle:"italic"}},"Saving…")),
+          e("div",{style:{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}},
+            organizeChips.map(g=>{
+              const on=cur.toLowerCase()===g.toLowerCase();
+              return e("button",{key:g,disabled:savingId===s.id,
+                onClick:()=>assignGroup(s.id,on?"":g),"aria-pressed":on,
+                style:{padding:"4px 12px",fontSize:12.5,borderRadius:14,
+                  border:`1.5px solid ${on?C.gold:C.line}`,
+                  background:on?C.gold:"transparent",color:on?C.brown:C.src}},g);
+            })));
+      })),
+    !organizing&&groups.map((g,gi)=>e("section",{key:g.name||gi,style:{marginTop:gi?34:18}},
       g.name&&e("h2",{style:{fontSize:14,letterSpacing:"0.14em",textTransform:"uppercase",
         color:C.src,borderBottom:`1.5px solid ${C.line}`,paddingBottom:7,marginBottom:14}},
         g.name,e("span",{style:{color:"#8D8371",marginLeft:8,fontSize:13}},g.items.length)),

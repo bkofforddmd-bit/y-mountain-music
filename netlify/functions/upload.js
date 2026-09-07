@@ -169,6 +169,27 @@ exports.handler = async (event) => {
     }
   }
 
+  // ---- 3c) Set (or clear) a song's group — the library's organize mode ----
+  // Touches ONLY the group field, so a quick filing tap can never wipe the
+  // song's other details the way a partial "update" would.
+  if (action === "group") {
+    const id = clip(body.id, 120);
+    if (!id) return json(400, { error: "Missing song id" });
+    try {
+      const catalog = await getJSON(CATALOG_KEY, { songs: [] });
+      const songs = catalog.songs || [];
+      const i = songs.findIndex((x) => x.id === id);
+      if (i < 0) return json(404, { error: "Song not found" });
+      songs[i].group = clip(body.group, 80);
+      songs[i].updatedAt = new Date().toISOString();
+      catalog.songs = songs;
+      await putJSON(CATALOG_KEY, catalog);
+      return json(200, { ok: true, entry: songs[i] });
+    } catch (err) {
+      return json(500, { error: "Could not save the group", detail: String(err.message || err) });
+    }
+  }
+
   // ---- 4) Delete a song from the catalog ----
   if (action === "delete") {
     const id = clip(body.id, 120);
