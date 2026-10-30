@@ -82,9 +82,9 @@ const API = "/.netlify/functions";
 const SONOS_KEY="sonosBridge";
 // The laptop's name on the home network; it keeps working when the router
 // hands the laptop a new number. The number itself still works if typed in ⚙.
-const SONOS_DEFAULT="brandon-laptop.local:5005";
-const SONOS_FALLBACK_IP="192.168.1.238:5005";
-const SONOS_STALE=["192.168.1.237:5005"]; // old defaults saved on phones — ignore them
+const SONOS_DEFAULT="192.168.1.238:5005"; // the laptop's current number; phones cannot look up its .local name
+const SONOS_ALT_NAME="brandon-laptop.local:5005";
+const SONOS_STALE=["192.168.1.237:5005","brandon-laptop.local:5005"]; // old defaults saved on phones — ignore them
 const sonosAddr=()=>{try{const a=(localStorage.getItem(SONOS_KEY)||"").trim();
   return SONOS_STALE.includes(a)?"":a;}catch(_){return "";}};
 function SonosButton({app,song,concert,small,style}){
@@ -124,7 +124,7 @@ function SonosButton({app,song,concert,small,style}){
       e("button",{onClick:ev=>{ev.stopPropagation();setEditing(false);},
         style:{border:0,background:"transparent",color:C.src,cursor:"pointer",fontSize:12}},"Cancel"),
       e("span",{style:{fontSize:11,color:C.src,width:"100%"}},
-        "Sonos Bridge address. "+SONOS_DEFAULT+" is the laptop's name; if that doesn't open, use the number shown in the bridge window (currently "+SONOS_FALLBACK_IP+"). Home Wi-Fi only.")));
+        "Sonos Bridge address. "+SONOS_DEFAULT+" is the laptop's current number (shown in the bridge window on the laptop). If it has changed, type the new number, or try the laptop's name "+SONOS_ALT_NAME+". Home Wi-Fi only.")));
 }
 const GROUPINGS = [
   {key:"group",label:"Group"},
